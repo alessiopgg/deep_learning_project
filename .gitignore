@@ -1,0 +1,15 @@
+.venv/
+*.pt
+*.pth
+*.ckpt
+data/
+ESC-50/
+FSD50K/
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.ipynb_checkpoints/
+outputs/
+hydra_outputs/
+results/
