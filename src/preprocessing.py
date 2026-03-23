@@ -121,7 +121,7 @@ def load_audio(path: str) -> torch.Tensor:
     mel_transform = T.MelSpectrogram(
         sample_rate = SAMPLE_RATE,
         n_fft       = N_FFT,
-        hop_length  = HOP_LENGTH,
+        hop_length  = HOP_LENGTH, 
         n_mels      = N_MELS,
         norm        = 'slaney',
         mel_scale   = 'slaney',
