@@ -1,0 +1,44 @@
+# config/finetune.yaml
+# ====================
+# Iperparametri per il fine-tuning su ESC-50.
+#
+# Questo file viene letto dal notebook PartB_finetune_ESC50.ipynb
+# con PyYAML. Centralizzare gli iperparametri qui serve per:
+#   1. Non avere numeri sparsi nel codice (magic numbers)
+#   2. Poter riprodurre esattamente un esperimento
+#   3. Rendere facile confrontare diverse configurazioni
+
+# ── Architettura ──────────────────────────────────────────────
+model:
+  num_classes: 50          # classi ESC-50
+  img_size: [128, 512]     # spettrogramma mel [freq, frame]
+  drop_rate: 0.3           # dropout nella testa classificatore
+
+# ── Training ──────────────────────────────────────────────────
+training:
+  n_epochs: 25             # epoche per fold
+  batch_size: 24           # campioni per batch (adatto T4 15GB)
+  num_workers: 2           # thread per il caricamento dati
+  val_ogni: 5              # valuta sul test set ogni N epoche
+
+# ── Learning rate ─────────────────────────────────────────────
+# LR diverso per encoder e classificatore:
+#   encoder:       LR basso  — pesi pretrainati già buoni
+#   classificatore: LR alto  — parte da zero, deve imparare presto
+optimizer:
+  lr_encoder: 0.000025       # 2.5e-5
+  lr_classificatore: 0.00025 # 2.5e-4
+  lr_min: 0.000001           # 1e-6  — minimo del cosine scheduler
+  weight_decay: 0.0005       # 5e-4  — regolarizzazione L2
+  label_smoothing: 0.1       # smoothing etichette (riduce overfitting)
+
+# ── Cross-validation ──────────────────────────────────────────
+cross_validation:
+  n_folds: 5
+  folds: [1, 2, 3, 4, 5]
+
+# ── Risultati attesi dal paper ────────────────────────────────
+# (solo per riferimento — non usati nel codice)
+paper_targets:
+  patch_12L: 0.900   # MAE-AST Patch 12L, chunked masking 75%
+  frame_12L: 0.889   # MAE-AST Frame 12L, random masking 75%
