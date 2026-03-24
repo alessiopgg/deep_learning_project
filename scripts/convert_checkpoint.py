@@ -403,7 +403,7 @@ def converti(input_path: str, output_path: str) -> None:
               f"(da post_extract_proj)")
 
     # ── Patch embedding ───────────────────────────────────────────────
-    # La convoluzione che trasforma le patch in vettori. 
+    # La convoluzione che trasforma le patch in vettori.
     # I nomi variano tra versioni di fairseq — proviamo vari candidati.
     candidati_patch = [
         (f"{prefisso}patch_embed.proj.weight", "patch_embed.proj.weight"),
