@@ -48,7 +48,6 @@ import sys
 import os
 import torch
 
-
 # ──────────────────────────────────────────────────────────────────────
 # CONFIGURAZIONE
 # ──────────────────────────────────────────────────────────────────────
@@ -188,12 +187,12 @@ def converti_layer(
         True se il layer è stato convertito, False se non trovato
     """
     # Prefissi per le chiavi di input (fairseq) e output (timm)
-    p_in  = f"{prefisso}layers.{n}."
+    p_in = f"{prefisso}layers.{n}."
     p_out = f"blocks.{n}."
 
     # Controlla che questo layer esista nel checkpoint
     chiave_test = f"{p_in}self_attn_layer_norm.weight"
-    chiave_alt  = f"{p_in}self_attn.in_proj_weight"
+    chiave_alt = f"{p_in}self_attn.in_proj_weight"
     if chiave_test not in state_in and chiave_alt not in state_in:
         return False
 
@@ -201,7 +200,7 @@ def converti_layer(
     # fairseq: self_attn_layer_norm.{weight,bias}
     # timm:    norm1.{weight,bias}
     for s in ["weight", "bias"]:
-        k_in  = f"{p_in}self_attn_layer_norm.{s}"
+        k_in = f"{p_in}self_attn_layer_norm.{s}"
         k_out = f"{p_out}norm1.{s}"
         if k_in in state_in:
             state_out[k_out] = state_in[k_in].clone()
@@ -232,10 +231,10 @@ def converti_layer(
         #   K: righe 768-1535
         #   V: righe 1536-2303
         qkv_weight = torch.cat([
-            state_in[q_w],   # [768, 768]
-            state_in[k_w],   # [768, 768]
-            state_in[v_w],   # [768, 768]
-        ], dim=0)             # → [2304, 768]
+            state_in[q_w],  # [768, 768]
+            state_in[k_w],  # [768, 768]
+            state_in[v_w],  # [768, 768]
+        ], dim=0)  # → [2304, 768]
         state_out[f"{p_out}attn.qkv.weight"] = qkv_weight
 
     elif in_w in state_in:
@@ -245,10 +244,10 @@ def converti_layer(
     # Stesso per i bias
     if all(k in state_in for k in [q_b, k_b, v_b]):
         qkv_bias = torch.cat([
-            state_in[q_b],   # [768]
-            state_in[k_b],   # [768]
-            state_in[v_b],   # [768]
-        ], dim=0)             # → [2304]
+            state_in[q_b],  # [768]
+            state_in[k_b],  # [768]
+            state_in[v_b],  # [768]
+        ], dim=0)  # → [2304]
         state_out[f"{p_out}attn.qkv.bias"] = qkv_bias
 
     elif in_b in state_in:
@@ -258,7 +257,7 @@ def converti_layer(
     # fairseq: self_attn.out_proj.{weight,bias}
     # timm:    attn.proj.{weight,bias}
     for s in ["weight", "bias"]:
-        k_in  = f"{p_in}self_attn.out_proj.{s}"
+        k_in = f"{p_in}self_attn.out_proj.{s}"
         k_out = f"{p_out}attn.proj.{s}"
         if k_in in state_in:
             state_out[k_out] = state_in[k_in].clone()
@@ -267,7 +266,7 @@ def converti_layer(
     # fairseq: final_layer_norm.{weight,bias}
     # timm:    norm2.{weight,bias}
     for s in ["weight", "bias"]:
-        k_in  = f"{p_in}final_layer_norm.{s}"
+        k_in = f"{p_in}final_layer_norm.{s}"
         k_out = f"{p_out}norm2.{s}"
         if k_in in state_in:
             state_out[k_out] = state_in[k_in].clone()
@@ -277,7 +276,7 @@ def converti_layer(
     # timm:    mlp.fc1.{weight,bias}, mlp.fc2.{weight,bias}
     for fc in ["fc1", "fc2"]:
         for s in ["weight", "bias"]:
-            k_in  = f"{p_in}{fc}.{s}"
+            k_in = f"{p_in}{fc}.{s}"
             k_out = f"{p_out}mlp.{fc}.{s}"
             if k_in in state_in:
                 state_out[k_out] = state_in[k_in].clone()
@@ -304,11 +303,11 @@ def converti(input_path: str, output_path: str) -> None:
         output_path: Percorso dove salvare il .pth timm
     """
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  CONVERSIONE CHECKPOINT  fairseq → timm")
     print(f"  Input:  {os.path.basename(input_path)}")
     print(f"  Output: {os.path.basename(output_path)}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # ── Step 1: Caricamento ───────────────────────────────────────────
     if not os.path.exists(input_path):
@@ -328,12 +327,12 @@ def converti(input_path: str, output_path: str) -> None:
     # ── Step 3: Rilevamento automatico parametri ──────────────────────
     print("\n[3/6] Rilevamento architettura...")
     embed_dim = rileva_embed_dim(state_in, EMBED_DIM_DEFAULT)
-    prefisso  = rileva_prefisso(state_in)
+    prefisso = rileva_prefisso(state_in)
 
     # ── Step 4: Conversione layer per layer ───────────────────────────
     print(f"\n[4/6] Conversione {NUM_LAYERS} layer encoder...")
     state_out = {}
-    layer_ok  = 0
+    layer_ok = 0
 
     for n in range(NUM_LAYERS):
         ok = converti_layer(state_in, state_out, n, prefisso)
@@ -369,16 +368,50 @@ def converti(input_path: str, output_path: str) -> None:
             print(f"      norm.bias    ✅  (da '{candidato}')")
             break
 
+    # ── post_extract_proj → patch_embed ───────────────────────────────
+    # ── post_extract_proj → patch_embed ───────────────────────────────
+    # QUESTO E' IL FIX CRITICO per la Parte B.
+    #
+    # Il problema: fairseq e timm rappresentano lo stesso strato
+    # (trasformazione patch → vettore) con nomi e shape diversi.
+    #
+    # fairseq: post_extract_proj.weight  [768, 256]
+    #   - matrice lineare 2D
+    #   - 256 = valori di una patch 16×16
+    #
+    # timm:    patch_embed.proj.weight   [768, 1, 16, 16]
+    #   - convoluzione 4D
+    #   - equivalente matematicamente: 256 = 1 × 16 × 16
+    #
+    # Il reshape [768, 256] → [768, 1, 16, 16] e esatto
+    # perché le due operazioni producono lo stesso risultato
+    # su qualsiasi input.
+    k_w = 'post_extract_proj.weight'
+    k_b = 'post_extract_proj.bias'
+
+    if k_w in state_in and 'patch_embed.proj.weight' not in state_out:
+        w = state_in[k_w]              # [768, 256]
+        w = w.reshape(768, 1, 16, 16)  # [768, 1, 16, 16]
+        state_out['patch_embed.proj.weight'] = w
+        print(f"      patch_embed.proj.weight  ✅  "
+              f"(reshapato da post_extract_proj "
+              f"[768,256] → [768,1,16,16])")
+
+    if k_b in state_in and 'patch_embed.proj.bias' not in state_out:
+        state_out['patch_embed.proj.bias'] = state_in[k_b].clone()
+        print(f"      patch_embed.proj.bias    ✅  "
+              f"(da post_extract_proj)")
+
     # ── Patch embedding ───────────────────────────────────────────────
     # La convoluzione che trasforma le patch in vettori.
     # I nomi variano tra versioni di fairseq — proviamo vari candidati.
     candidati_patch = [
-        (f"{prefisso}patch_embed.proj.weight",  "patch_embed.proj.weight"),
-        (f"{prefisso}patch_embed.proj.bias",    "patch_embed.proj.bias"),
-        ("ast_patch_embed.proj.weight",          "patch_embed.proj.weight"),
-        ("ast_patch_embed.proj.bias",            "patch_embed.proj.bias"),
-        ("patch_embed.proj.weight",              "patch_embed.proj.weight"),
-        ("patch_embed.proj.bias",                "patch_embed.proj.bias"),
+        (f"{prefisso}patch_embed.proj.weight", "patch_embed.proj.weight"),
+        (f"{prefisso}patch_embed.proj.bias", "patch_embed.proj.bias"),
+        ("ast_patch_embed.proj.weight", "patch_embed.proj.weight"),
+        ("ast_patch_embed.proj.bias", "patch_embed.proj.bias"),
+        ("patch_embed.proj.weight", "patch_embed.proj.weight"),
+        ("patch_embed.proj.bias", "patch_embed.proj.bias"),
     ]
     for k_in, k_out in candidati_patch:
         if k_in in state_in and k_out not in state_out:
@@ -388,9 +421,9 @@ def converti(input_path: str, output_path: str) -> None:
     # ── Cls token e positional embedding ─────────────────────────────
     for k_in, k_out in [
         (f"{prefisso}cls_token", "cls_token"),
-        ("cls_token",             "cls_token"),
+        ("cls_token", "cls_token"),
         (f"{prefisso}pos_embed", "pos_embed"),
-        ("pos_embed",             "pos_embed"),
+        ("pos_embed", "pos_embed"),
     ]:
         if k_in in state_in and k_out not in state_out:
             state_out[k_out] = state_in[k_in].clone()
@@ -404,9 +437,9 @@ def converti(input_path: str, output_path: str) -> None:
     print(f"      ✅ Salvato ({dim_out:.0f} MB)")
 
     # ── Report finale ─────────────────────────────────────────────────
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  REPORT")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Layer convertiti:        {layer_ok}/{NUM_LAYERS}")
     print(f"  Chiavi nell'output:      {len(state_out)}")
 
@@ -439,9 +472,9 @@ def converti(input_path: str, output_path: str) -> None:
             print(f"    ... e altri {len(encoder_non_mappate) - 15}")
 
     # ── Verifica ──────────────────────────────────────────────────────
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  VERIFICA")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     verifica(output_path)
 
 
@@ -458,28 +491,28 @@ def verifica(output_path: str) -> None:
 
         # Chiavi obbligatorie per un ViT-base funzionante
         controlli = {
-            "blocks.0.attn.qkv.weight":   "QKV layer 0",
-            "blocks.11.attn.qkv.weight":  "QKV layer 11",
-            "blocks.0.norm1.weight":       "norm1 layer 0",
-            "blocks.0.mlp.fc1.weight":     "MLP fc1 layer 0",
-            "norm.weight":                 "layer norm finale",
+            "blocks.0.attn.qkv.weight": "QKV layer 0",
+            "blocks.11.attn.qkv.weight": "QKV layer 11",
+            "blocks.0.norm1.weight": "norm1 layer 0",
+            "blocks.0.mlp.fc1.weight": "MLP fc1 layer 0",
+            "norm.weight": "layer norm finale",
         }
 
         tutti_ok = True
         for chiave, descrizione in controlli.items():
             presente = chiave in state
-            icona    = "✅" if presente else "❌"
+            icona = "✅" if presente else "❌"
             print(f"  {icona}  {descrizione:<25} ({chiave})")
             if not presente:
                 tutti_ok = False
 
         # Conta chiavi opzionali
         ha_patch = "patch_embed.proj.weight" in state
-        ha_cls   = "cls_token" in state
-        ha_pos   = "pos_embed" in state
+        ha_cls = "cls_token" in state
+        ha_pos = "pos_embed" in state
         print(f"\n  {'✅' if ha_patch else '⚠️ '} patch_embed.proj.weight")
-        print(f"  {'✅' if ha_cls   else '⚠️ '} cls_token")
-        print(f"  {'✅' if ha_pos   else '⚠️ '} pos_embed")
+        print(f"  {'✅' if ha_cls else '⚠️ '} cls_token")
+        print(f"  {'✅' if ha_pos else '⚠️ '} pos_embed")
 
         print()
         if tutti_ok:
@@ -494,7 +527,7 @@ def verifica(output_path: str) -> None:
     except Exception as e:
         print(f"  ❌ Errore durante la verifica: {e}")
 
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -521,6 +554,6 @@ if __name__ == "__main__":
         sys.exit(0)
 
     converti(
-        input_path  = sys.argv[1],
-        output_path = sys.argv[2],
+        input_path=sys.argv[1],
+        output_path=sys.argv[2],
     )
