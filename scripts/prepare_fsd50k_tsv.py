@@ -1,312 +1,314 @@
 """
 scripts/prepare_fsd50k_tsv.py
 ==============================
-Scarica FSD50K da Zenodo e genera i file TSV per fairseq.
+Scarica FSD50K da Zenodo e genera i file TSV per fairseq-hydra-train.
 
-FSD50K è un dataset audio con 51.197 clip etichettate con
-l'ontologia AudioSet. È distribuito su Zenodo in 6 zip:
-  - dev_audio parte 1-5  (~4.5 GB ciascuno)
-  - eval_audio           (~5 GB)
+FORMATO TSV RICHIESTO (dal README MAE-AST e dal codice del task):
+    /
+    /percorso/assoluto/file1.flac\tn_campioni_audio
+    /percorso/assoluto/file2.flac\tn_campioni_audio
 
-Fairseq si aspetta file TSV nel formato:
-  /percorso/cartella
-  file1.wav\tn_campioni
-  file2.wav\tn_campioni
-  ...
+Note importanti:
+- Prima riga: "/" (solo uno slash)
+- Percorsi assoluti completi al file audio
+- n_campioni = campioni audio GREZZI a 16kHz (non frame fbank)
+  Il task mae_ast_pretraining calcola le fbank internamente.
+- Il dataloader fairseq accetta .flac e .mkv (non .wav)
+  Per questo convertiamo FSD50K da .wav a .flac
 
-Questo script:
-  1. Scarica i 6 zip da Zenodo (se non presenti)
-  2. Estrae i file audio
-  3. Conta i campioni di ogni clip
-  4. Genera train.tsv e valid.tsv
+PARAMETRI TASK (da config/pretrain/mae_ast.yaml):
+  sample_rate: 16000
+  max_sample_size: 250000  (~15.6 secondi)
+  min_sample_size: 32000   (~2 secondi)
 
 USO SU COLAB:
-  python scripts/prepare_fsd50k_tsv.py \\
-      --output_dir /content/fsd50k_tsv \\
+  python scripts/prepare_fsd50k_tsv.py \
+      --output_dir /content/fsd50k_tsv \
       --audio_dir  /content/FSD50K
-
-USO LOCALE (solo per test):
-  python scripts/prepare_fsd50k_tsv.py \\
-      --output_dir ./fsd50k_tsv \\
-      --audio_dir  ./FSD50K
 """
 
 import os
-import csv
 import argparse
 import subprocess
-from pathlib import Path
 
 
-# ── URL Zenodo FSD50K ─────────────────────────────────────────────────
-# DOI: 10.5281/zenodo.4060432
 ZENODO_URLS = {
-    'dev_1': 'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z01',
-    'dev_2': 'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z02',
-    'dev_3': 'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z03',
-    'dev_4': 'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z04',
-    'dev_5': 'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z05',
+    'dev_1':   'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z01',
+    'dev_2':   'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z02',
+    'dev_3':   'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z03',
+    'dev_4':   'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z04',
+    'dev_5':   'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.z05',
     'dev_zip': 'https://zenodo.org/record/4060432/files/FSD50K.dev_audio.zip',
-    'eval_zip': 'https://zenodo.org/record/4060432/files/FSD50K.eval_audio.zip',
-    'dev_csv': 'https://zenodo.org/record/4060432/files/FSD50K.ground_truth.zip',
+    'eval_zip':'https://zenodo.org/record/4060432/files/FSD50K.eval_audio.zip',
+    'gt_zip':  'https://zenodo.org/record/4060432/files/FSD50K.ground_truth.zip',
 }
 
-# Frequenza di campionamento target
-SAMPLE_RATE = 16000
+SAMPLE_RATE     = 16000
+# Soglie dal config ufficiale mae_ast.yaml
+MAX_SAMPLE_SIZE = 250000   # 15.6 secondi a 16kHz
+MIN_SAMPLE_SIZE = 32000    # 2 secondi a 16kHz
 
 
 def scarica_file(url: str, dest: str) -> None:
-    """Scarica un file con wget mostrando il progresso."""
     if os.path.exists(dest):
-        print(f"  Già presente: {os.path.basename(dest)}")
+        print(f"  Gia presente: {os.path.basename(dest)}")
         return
     print(f"  Scarico: {os.path.basename(dest)} ...")
-    subprocess.run(
-        ['wget', '-q', '--show-progress', '-O', dest, url],
-        check=True
-    )
-    print(f"  ✅ Scaricato: {os.path.basename(dest)}")
+    subprocess.run(['wget', '-q', '--show-progress', '-O', dest, url], check=True)
+    print(f"  OK: {os.path.basename(dest)}")
 
 
-def conta_campioni(wav_path: str) -> int:
+def converti_wav_in_flac(audio_dir: str) -> int:
     """
-    Conta il numero di campioni in un file WAV.
+    Converte tutti i .wav in .flac a 16kHz mono.
 
-    Usa torchaudio per essere coerente con il resto del progetto.
-    Restituisce il numero di campioni DOPO il resample a 16kHz.
+    Il dataloader fairseq del repo MAE-AST accetta .flac e .mkv
+    ma non .wav direttamente (il RawAudioDataset di fairseq
+    usa soundfile che ha supporto limitato per .wav su alcune piattaforme).
+    Usiamo .flac che e lossless e universalmente supportato.
+
+    Usa ffmpeg con resample a 16kHz e mono contemporaneamente
+    alla conversione — piu efficiente che due passaggi separati.
+    """
+    file_wav  = [f for f in os.listdir(audio_dir) if f.endswith('.wav')]
+    file_flac = [f for f in os.listdir(audio_dir) if f.endswith('.flac')]
+
+    if not file_wav:
+        print(f"  Nessun .wav trovato (forse gia convertiti: {len(file_flac)} .flac)")
+        return len(file_flac)
+
+    if len(file_flac) >= len(file_wav):
+        print(f"  Conversione gia fatta: {len(file_flac)} .flac presenti")
+        return len(file_flac)
+
+    print(f"  Converto {len(file_wav)} .wav -> .flac (16kHz mono)...")
+    print(f"  Tempo stimato: ~5-10 minuti su Colab")
+
+    convertiti = 0
+    errori     = 0
+
+    for i, nome_wav in enumerate(sorted(file_wav)):
+        percorso_wav  = os.path.join(audio_dir, nome_wav)
+        percorso_flac = os.path.join(audio_dir, nome_wav.replace('.wav', '.flac'))
+
+        if os.path.exists(percorso_flac):
+            convertiti += 1
+            os.remove(percorso_wav)
+            continue
+
+        try:
+            subprocess.run([
+                'ffmpeg', '-i', percorso_wav,
+                '-c:a', 'flac',
+                '-ar', str(SAMPLE_RATE),
+                '-ac', '1',
+                percorso_flac,
+                '-y', '-loglevel', 'error'
+            ], check=True)
+            os.remove(percorso_wav)
+            convertiti += 1
+        except Exception as e:
+            errori += 1
+            if errori <= 5:
+                print(f"  Errore su {nome_wav}: {e}")
+
+        if (i + 1) % 5000 == 0:
+            print(f"    {i+1}/{len(file_wav)} ...")
+
+    print(f"  Completato: {convertiti} .flac, {errori} errori")
+    return convertiti
+
+
+def conta_campioni_flac(percorso: str) -> int:
+    """
+    Conta i campioni audio grezzi in un file .flac.
+
+    IMPORTANTE: il TSV deve contenere campioni audio GREZZI a 16kHz,
+    non frame fbank. Il task mae_ast_pretraining calcola le fbank
+    internamente durante il training.
+
+    Usa torchaudio.info() che legge solo l'header — veloce su 51k file.
+    I file sono gia stati convertiti a 16kHz quindi non serve resample.
     """
     import torchaudio
-    import torchaudio.transforms as T
-
-    info = torchaudio.info(wav_path)
-    n_campioni_originali = info.num_frames
-    sr_originale         = info.sample_rate
-
-    if sr_originale == SAMPLE_RATE:
-        return n_campioni_originali
-
-    # Calcola n_campioni dopo resample
-    n_campioni_resampled = int(
-        n_campioni_originali * SAMPLE_RATE / sr_originale
-    )
-    return n_campioni_resampled
+    info = torchaudio.info(percorso)
+    return info.num_frames
 
 
 def genera_tsv(
-        audio_dir: str,
-        output_path: str,
-        max_durata_sec: float = 30.0,
-        min_durata_sec: float = 0.5,
+    audio_dir: str,
+    output_path: str,
 ) -> int:
     """
-    Genera un file TSV da una cartella di file WAV.
+    Genera file TSV nel formato richiesto da fairseq mae_ast_pretraining.
 
-    Scorre tutti i .wav nella cartella, conta i campioni,
-    e filtra le clip troppo corte o troppo lunghe.
+    Formato (verificato dal README MAE-AST e dal codice del task):
+        /
+        /percorso/assoluto/file1.flac\tn_campioni_audio_16kHz
+        /percorso/assoluto/file2.flac\tn_campioni_audio_16kHz
 
-    Args:
-        audio_dir:      Cartella con i file .wav
-        output_path:    Percorso del TSV da generare
-        max_durata_sec: Filtra clip più lunghe di N secondi
-        min_durata_sec: Filtra clip più corte di N secondi
-
-    Returns:
-        Numero di clip incluse nel TSV
+    Applica i filtri del config ufficiale:
+        min_sample_size: 32000  (2 secondi)
+        max_sample_size: 250000 (15.6 secondi)
     """
-    import torchaudio
-
     audio_dir = os.path.abspath(audio_dir)
-    file_wav  = sorted([
-        f for f in os.listdir(audio_dir)
-        if f.endswith('.wav') or f.endswith('.flac')
-    ])
+    file_flac = sorted([f for f in os.listdir(audio_dir) if f.endswith('.flac')])
 
-    if not file_wav:
-        print(f"  ⚠️  Nessun file audio in: {audio_dir}")
+    if not file_flac:
+        print(f"  Nessun .flac in: {audio_dir}")
         return 0
 
-    max_campioni = int(max_durata_sec * SAMPLE_RATE)
-    min_campioni = int(min_durata_sec * SAMPLE_RATE)
+    print(f"  Analizzo {len(file_flac)} file .flac...")
 
     incluse  = 0
     escluse  = 0
+    troncate = 0
     errori   = 0
     righe    = []
 
-    print(f"  Analizzo {len(file_wav)} file audio...")
-
-    for i, nome_file in enumerate(file_wav):
-
-        if (i + 1) % 2000 == 0:
-            print(f"    {i+1}/{len(file_wav)}...")
-
-        percorso = os.path.join(audio_dir, nome_file)
-
+    for i, nome in enumerate(file_flac):
+        percorso = os.path.join(audio_dir, nome)
         try:
-            n = conta_campioni(percorso)
+            n = conta_campioni_flac(percorso)
 
-            if n < min_campioni:
+            # Filtra clip troppo corte (sotto min_sample_size del config)
+            if n < MIN_SAMPLE_SIZE:
                 escluse += 1
                 continue
-            if n > max_campioni:
-                # Tronca invece di escludere — fairseq gestisce il troncamento
-                n = max_campioni
 
-            righe.append(f"{nome_file}\t{n}")
+            # Clip troppo lunghe: tronca al max (il task fa random_crop)
+            if n > MAX_SAMPLE_SIZE:
+                n = MAX_SAMPLE_SIZE
+                troncate += 1
+
+            righe.append(f"{percorso}\t{n}")
             incluse += 1
 
         except Exception as e:
             errori += 1
             if errori <= 5:
-                print(f"  ⚠️  Errore su {nome_file}: {e}")
+                print(f"  Errore su {nome}: {e}")
 
-    # Scrivi il TSV
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        if (i + 1) % 5000 == 0:
+            print(f"    {i+1}/{len(file_flac)} ...")
+
+    # Prima riga: "/" come da README MAE-AST
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, 'w') as f:
-        f.write(audio_dir + '\n')
+        f.write('/\n')
         f.write('\n'.join(righe) + '\n')
 
-    print(f"  ✅ TSV generato: {output_path}")
-    print(f"     Incluse:  {incluse}")
-    print(f"     Escluse:  {escluse}  (troppo corte)")
-    print(f"     Errori:   {errori}")
+    print(f"  TSV: {output_path}")
+    print(f"    Incluse:  {incluse}")
+    print(f"    Escluse:  {escluse}  (sotto {MIN_SAMPLE_SIZE} campioni = 2s)")
+    print(f"    Troncate: {troncate} (sopra {MAX_SAMPLE_SIZE} campioni = 15.6s)")
+    print(f"    Errori:   {errori}")
 
     return incluse
 
 
 def main(args):
-
     os.makedirs(args.output_dir, exist_ok=True)
     os.makedirs(args.audio_dir,  exist_ok=True)
 
-    dev_dir  = os.path.join(args.audio_dir, 'dev_audio')
-    eval_dir = os.path.join(args.audio_dir, 'eval_audio')
+    dev_dir  = os.path.join(args.audio_dir, 'FSD50K.dev_audio')
+    eval_dir = os.path.join(args.audio_dir, 'FSD50K.eval_audio')
 
-    # ── Download ──────────────────────────────────────────────────────
+    # Fase 1: Download
     if not args.skip_download:
-        print("\n[1/4] Download FSD50K da Zenodo...")
-        download_dir = os.path.join(args.audio_dir, 'zips')
-        os.makedirs(download_dir, exist_ok=True)
-
+        print("\n[1/5] Download FSD50K da Zenodo (~25 GB)...")
+        dl_dir = os.path.join(args.audio_dir, 'zips')
+        os.makedirs(dl_dir, exist_ok=True)
         for nome, url in ZENODO_URLS.items():
-            dest = os.path.join(download_dir, os.path.basename(url))
-            scarica_file(url, dest)
+            scarica_file(url, os.path.join(dl_dir, os.path.basename(url)))
     else:
-        print("\n[1/4] Download saltato (--skip_download)")
-        download_dir = os.path.join(args.audio_dir, 'zips')
+        print("\n[1/5] Download saltato")
+        dl_dir = os.path.join(args.audio_dir, 'zips')
 
-    # ── Estrazione ────────────────────────────────────────────────────
+    # Fase 2: Estrazione
     if not args.skip_extract:
-        print("\n[2/4] Estrazione zip...")
+        print("\n[2/5] Estrazione zip...")
+        import shutil
 
-        # Dev audio: è uno zip multi-volume (.z01-.z05 + .zip)
-        dev_zip = os.path.join(download_dir, 'FSD50K.dev_audio.zip')
-        if not os.path.exists(dev_dir) or len(os.listdir(dev_dir)) < 1000:
-            print("  Estraggo dev_audio (zip multi-volume)...")
-            os.makedirs(dev_dir, exist_ok=True)
-            subprocess.run(
-                ['unzip', '-q', dev_zip, '-d', args.audio_dir],
-                check=True
-            )
-            print("  ✅ dev_audio estratto")
+        dev_zip = os.path.join(dl_dir, 'FSD50K.dev_audio.zip')
+        n_dev = len([f for f in os.listdir(dev_dir)
+                     if f.endswith(('.wav', '.flac'))]) if os.path.exists(dev_dir) else 0
+        if n_dev < 1000:
+            print("  Estraggo FSD50K.dev_audio (zip multi-volume)...")
+            subprocess.run(['unzip', '-q', dev_zip, '-d', args.audio_dir], check=True)
+            print("  OK dev_audio")
         else:
-            print(f"  dev_audio già estratto ({len(os.listdir(dev_dir))} file)")
+            print(f"  dev_audio gia estratto ({n_dev} file)")
 
-        # Eval audio
-        eval_zip = os.path.join(download_dir, 'FSD50K.eval_audio.zip')
-        if not os.path.exists(eval_dir) or len(os.listdir(eval_dir)) < 100:
-            print("  Estraggo eval_audio...")
-            os.makedirs(eval_dir, exist_ok=True)
-            subprocess.run(
-                ['unzip', '-q', eval_zip, '-d', args.audio_dir],
-                check=True
-            )
-            print("  ✅ eval_audio estratto")
+        eval_zip = os.path.join(dl_dir, 'FSD50K.eval_audio.zip')
+        n_eval = len([f for f in os.listdir(eval_dir)
+                      if f.endswith(('.wav', '.flac'))]) if os.path.exists(eval_dir) else 0
+        if n_eval < 100:
+            print("  Estraggo FSD50K.eval_audio...")
+            subprocess.run(['unzip', '-q', eval_zip, '-d', args.audio_dir], check=True)
+            print("  OK eval_audio")
         else:
-            print(f"  eval_audio già estratto ({len(os.listdir(eval_dir))} file)")
+            print(f"  eval_audio gia estratto ({n_eval} file)")
 
-        # Ground truth CSV
-        gt_zip = os.path.join(download_dir, 'FSD50K.ground_truth.zip')
-        gt_dir = os.path.join(args.audio_dir, 'ground_truth')
-        if not os.path.exists(gt_dir):
-            subprocess.run(
-                ['unzip', '-q', gt_zip, '-d', args.audio_dir],
-                check=True
-            )
-            print("  ✅ ground_truth estratto")
-
+        # Elimina zip per liberare ~25 GB
+        if os.path.exists(dl_dir):
+            shutil.rmtree(dl_dir)
+            print("  Zip eliminati (liberati ~25 GB)")
     else:
-        print("\n[2/4] Estrazione saltata (--skip_extract)")
+        print("\n[2/5] Estrazione saltata")
 
-    # ── Verifica ──────────────────────────────────────────────────────
-    print("\n[3/4] Verifica file audio...")
+    # Fase 3: Conversione wav -> flac
+    if not args.skip_convert:
+        print("\n[3/5] Conversione .wav -> .flac (16kHz mono)...")
+        print("  dev_audio:")
+        converti_wav_in_flac(dev_dir)
+        print("  eval_audio:")
+        converti_wav_in_flac(eval_dir)
+    else:
+        print("\n[3/5] Conversione saltata")
 
-    n_dev  = len([f for f in os.listdir(dev_dir)
-                  if f.endswith('.wav')]) if os.path.exists(dev_dir) else 0
-    n_eval = len([f for f in os.listdir(eval_dir)
-                  if f.endswith('.wav')]) if os.path.exists(eval_dir) else 0
-
-    print(f"  dev_audio:  {n_dev} file wav  (atteso: ~40.966)")
-    print(f"  eval_audio: {n_eval} file wav  (atteso: ~10.231)")
-
+    # Fase 4: Verifica
+    print("\n[4/5] Verifica file...")
+    n_dev  = len([f for f in os.listdir(dev_dir)  if f.endswith('.flac')]) if os.path.exists(dev_dir)  else 0
+    n_eval = len([f for f in os.listdir(eval_dir) if f.endswith('.flac')]) if os.path.exists(eval_dir) else 0
+    print(f"  dev_audio:  {n_dev} .flac  (atteso: ~40.966)")
+    print(f"  eval_audio: {n_eval} .flac  (atteso: ~10.231)")
     if n_dev < 1000:
-        print("  ❌ dev_audio sembra vuoto — controlla l'estrazione")
+        print("  ERRORE: dev_audio sembra vuoto")
         return
 
-    # ── Genera TSV ────────────────────────────────────────────────────
-    print("\n[4/4] Generazione TSV per fairseq...")
-
-    # train.tsv ← dev_audio (40k clip, usato per pretraining)
+    # Fase 5: Genera TSV
+    print("\n[5/5] Generazione TSV...")
     train_tsv = os.path.join(args.output_dir, 'train.tsv')
-    print("\n  train.tsv (dev_audio):")
-    n_train = genera_tsv(
-        audio_dir   = dev_dir,
-        output_path = train_tsv,
-    )
-
-    # valid.tsv ← eval_audio (10k clip, usato come validation)
     valid_tsv = os.path.join(args.output_dir, 'valid.tsv')
-    print("\n  valid.tsv (eval_audio):")
-    n_valid = genera_tsv(
-        audio_dir   = eval_dir,
-        output_path = valid_tsv,
-    )
 
-    # ── Riepilogo ─────────────────────────────────────────────────────
+    print("\n  train.tsv:")
+    n_train = genera_tsv(dev_dir, train_tsv)
+    print("\n  valid.tsv:")
+    n_valid = genera_tsv(eval_dir, valid_tsv)
+
+    # Verifica formato
+    with open(train_tsv) as f:
+        prima = f.readline().strip()
+        seconda = f.readline().strip()
+    print(f"\n  Prima riga:  '{prima}'  (atteso: '/')")
+    print(f"  Esempio:     '{seconda[:70]}'")
+    assert prima == '/', f"ERRORE formato TSV: prima riga deve essere '/', trovato '{prima}'"
+
     print(f"\n{'='*55}")
-    print(f"  TSV PRONTI PER FAIRSEQ")
+    print(f"  TSV PRONTI PER fairseq-hydra-train")
     print(f"{'='*55}")
-    print(f"  train.tsv:  {n_train} clip → {train_tsv}")
-    print(f"  valid.tsv:  {n_valid} clip → {valid_tsv}")
-    print(f"\n  Prossimo step: copia i TSV su Google Drive")
-    print(f"  e usali nel notebook PartA_pretrain.ipynb")
+    print(f"  train.tsv: {n_train} clip")
+    print(f"  valid.tsv: {n_valid} clip")
     print(f"{'='*55}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Prepara FSD50K per il pretraining MAE-AST con fairseq"
-    )
-    parser.add_argument(
-        '--output_dir',
-        default='/content/fsd50k_tsv',
-        help='Cartella dove salvare i file TSV'
-    )
-    parser.add_argument(
-        '--audio_dir',
-        default='/content/FSD50K',
-        help='Cartella dove scaricare/cercare FSD50K'
-    )
-    parser.add_argument(
-        '--skip_download',
-        action='store_true',
-        help='Salta il download (usa file già presenti)'
-    )
-    parser.add_argument(
-        '--skip_extract',
-        action='store_true',
-        help='Salta la decompressione (usa file già estratti)'
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output_dir', default='/content/fsd50k_tsv')
+    parser.add_argument('--audio_dir',  default='/content/FSD50K')
+    parser.add_argument('--skip_download', action='store_true')
+    parser.add_argument('--skip_extract',  action='store_true')
+    parser.add_argument('--skip_convert',  action='store_true')
     args = parser.parse_args()
     main(args)
