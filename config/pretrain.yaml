@@ -1,0 +1,132 @@
+# config/pretrain.yaml
+# ====================
+# Iperparametri per il pretraining MAE-AST su FSD50K.
+#
+# Questo file viene letto dal notebook PartA_pretrain.ipynb.
+# I tre pretraining (25%, 50%, 75%) sono identici tranne
+# il parametro mask_prob che viene sovrascritto da riga di comando.
+#
+# RIFERIMENTO: config/pretraining.yaml nel repo MAE-AST degli autori
+# Abbiamo ridotto max_update e aumentato log_interval per adattarci
+# a Colab A100 con FSD50K invece di AudioSet.
+
+# ── Dataset ───────────────────────────────────────────────────────────
+dataset:
+  # Cartella contenente train.tsv e valid.tsv
+  # Su Colab: /content/fsd50k_tsv
+  data_dir: /content/fsd50k_tsv
+
+  # Frequenza di campionamento target
+  sample_rate: 16000
+
+  # Numero massimo di campioni per clip
+  # 16000 * 10 = 10 secondi
+  max_sample_size: 160000
+
+  # Numero minimo di campioni per clip
+  # 16000 * 0.5 = 0.5 secondi
+  min_sample_size: 8000
+
+# ── Architettura ──────────────────────────────────────────────────────
+model:
+  # Nome del modello fairseq (registrato in mae_ast/models/)
+  arch: mae_ast_patch
+
+  # Dimensione embedding (ViT-base)
+  encoder_embed_dim: 768
+
+  # Numero layer encoder
+  encoder_layers: 6
+
+  # Numero layer decoder (leggero)
+  decoder_layers: 2
+
+  # Numero attention heads
+  encoder_attention_heads: 12
+
+  # Dimensione feed-forward
+  encoder_ffn_embed_dim: 3072
+
+  # Dropout
+  dropout: 0.1
+  attention_dropout: 0.1
+
+# ── Masking ───────────────────────────────────────────────────────────
+# NOTA: mask_prob viene sovrascritto da riga di comando nel notebook
+# per i tre run (0.25, 0.50, 0.75)
+masking:
+  # Probabilità di mascherare un token
+  # Valori usati nell'ablation: 0.25, 0.50, 0.75
+  mask_prob: 0.75
+
+  # Strategia di masking
+  # chunk = mascheratura a blocchi (migliore per patch-based)
+  mask_type: chunk_mask
+
+  # Dimensione chunk per chunk_mask
+  mask_channel_min_space: 3
+
+# ── Ottimizzatore ─────────────────────────────────────────────────────
+optimizer:
+  # Adam con weight decay
+  optimizer: adam
+  adam_betas: [0.9, 0.98]
+  adam_eps: 1.0e-06
+  weight_decay: 0.01
+
+  # Learning rate
+  lr: 0.0001
+
+  # Scheduler: polynomial decay (come nel paper)
+  lr_scheduler: polynomial_decay
+  warmup_updates: 2000
+  total_num_update: 20000
+  end_learning_rate: 0.0
+
+# ── Training ──────────────────────────────────────────────────────────
+training:
+  # Numero massimo di step
+  # 20.000 step su FSD50K ≈ 10 epoche
+  # Il paper usa 600.000 step su AudioSet — noi usiamo 1/30
+  # sufficiente per vedere il trend tra masking ratio diversi
+  max_update: 20000
+
+  # Batch size in numero di campioni (non clip)
+  # 1.440.000 campioni ≈ 90 secondi di audio per batch
+  # Con clip da ~5s: circa 18 clip per batch su A100
+  max_tokens: 1440000
+
+  # Aggiorna i pesi ogni N batch (gradient accumulation)
+  # Simula un batch più grande senza aumentare la memoria
+  update_freq: 1
+
+  # Salva checkpoint ogni N step
+  save_interval_updates: 5000
+
+  # Tieni solo gli ultimi N checkpoint (risparmia spazio)
+  keep_interval_updates: 1
+
+  # Log ogni N step
+  log_interval: 100
+
+  # Seed per riproducibilità
+  seed: 42
+
+# ── Loss ──────────────────────────────────────────────────────────────
+loss:
+  # Loss discriminativa (InfoNCE) + generativa (MSE)
+  criterion: mae_ast
+
+  # Peso della loss di ricostruzione
+  # lambda=10 come nel paper
+  reconstruction_weight: 10
+
+# ── Risultati attesi ─────────────────────────────────────────────────
+# (solo per riferimento)
+# Con FSD50K e 20.000 step ci aspettiamo accuracy ESC-50 inferiori
+# al paper (che usa AudioSet 2M clip + 600.000 step).
+# L'obiettivo è verificare il TREND: acc_75 > acc_50 > acc_25
+expected_trend:
+  mask_25: "baseline (più facile da ottimizzare)"
+  mask_50: "intermedio"
+  mask_75: "migliore (come nel paper)"
